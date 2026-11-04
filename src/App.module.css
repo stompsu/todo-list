@@ -340,6 +340,11 @@
   background: var(--column);
 }
 
+.columnOver {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+}
+
 .columnHeading {
   justify-content: space-between;
   gap: 0.5rem;
@@ -370,6 +375,24 @@
   color: var(--muted);
   font-size: 0.75rem;
   text-align: center;
+}
+
+.dragPreview {
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.7rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem rgb(20 30 45 / 20%);
+  font-weight: 650;
+}
+
+.addButton:disabled,
+.textButton:disabled,
+.smallButton:disabled,
+.plainButton:disabled,
+.alertButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .alert {

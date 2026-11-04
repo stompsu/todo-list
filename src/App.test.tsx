@@ -1,138 +1,154 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
-import { EMPTY_BOARD } from './lib/board';
-import { STORAGE_KEY } from './lib/storage';
+import type { BoardData } from './types/board';
 
-describe('ToDo board', () => {
+let serverBoard: BoardData;
+let revision: number;
+let requests: RequestInit[];
+let forceConflict: boolean;
+
+function response(data: unknown, status = 200, version = revision) {
+  return new Response(JSON.stringify(data), { status, headers: { ETag: `"v${version}"` } });
+}
+
+describe('shared ToDo board', () => {
   beforeEach(() => {
-    localStorage.clear();
+    serverBoard = { version: 1, categories: [], tasks: [] };
+    revision = 1;
+    requests = [];
+    forceConflict = false;
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init) requests.push(init);
+      if (init?.method === 'PUT') {
+        if (forceConflict) return response({ message: 'stale' }, 412);
+        if (init.headers && new Headers(init.headers).get('If-Match') !== `"v${revision}"`) {
+          return response({ message: 'stale' }, 412);
+        }
+        serverBoard = JSON.parse(String(init.body)) as BoardData;
+        revision += 1;
+        return response(serverBoard, 200, revision);
+      }
+      return response(serverBoard);
+    }));
   });
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it('creates, edits, moves, deletes, and persists tasks across a reload', async () => {
+  it('loads the shared board, mutates it with If-Match, and gets the same data after reload', async () => {
     const user = userEvent.setup();
-    const firstRender = render(<App />);
-
-    await user.click(screen.getByRole('button', { name: 'Add task' }));
-    let dialog = screen.getByRole('dialog', { name: 'Add a task' });
-    await user.type(within(dialog).getByLabelText('Title'), 'Draft release notes');
-    await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
-
-    let task = screen.getByRole('article');
-    await user.click(within(task).getByRole('button', { name: 'Edit Draft release notes' }));
-    dialog = screen.getByRole('dialog', { name: 'Edit task' });
-    const title = within(dialog).getByLabelText('Title');
-    await user.clear(title);
-    await user.type(title, 'Write release notes');
-    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
-
-    task = screen.getByRole('article');
-    await user.selectOptions(within(task).getByLabelText('Status for Write release notes'), 'completed');
-    expect(within(task).getByLabelText('Status for Write release notes')).toHaveValue('completed');
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).tasks[0]).toMatchObject({
-      title: 'Write release notes',
-      status: 'completed',
-    });
-
-    firstRender.unmount();
-    render(<App />);
-    task = screen.getByRole('article');
-    expect(within(task).getByText('Write release notes')).toBeVisible();
-    expect(within(task).getByLabelText('Status for Write release notes')).toHaveValue('completed');
-    await user.click(within(task).getByRole('button', { name: 'Delete Write release notes' }));
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).tasks).toEqual([]);
-  });
-
-  it('keeps task color independent from category and uncategorizes tasks on category deletion', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(screen.getByText('Manage categories'));
-    await user.type(screen.getByLabelText('New category name'), 'Home');
-    await user.click(screen.getByRole('button', { name: 'Add category' }));
-
+    const first = render(<App />);
+    await screen.findByText('Shared board ready.');
     await user.click(screen.getByRole('button', { name: 'Add task' }));
     const dialog = screen.getByRole('dialog', { name: 'Add a task' });
-    await user.type(within(dialog).getByLabelText('Title'), 'Water plants');
-    const categoryId = within(dialog).getByRole('option', { name: 'Home' }).getAttribute('value');
-    await user.selectOptions(within(dialog).getByLabelText('Category Optional'), categoryId!);
-    fireEvent.change(within(dialog).getByLabelText(/Task color/), { target: { value: '#21a179' } });
+    await user.type(within(dialog).getByLabelText('Title'), 'Write release notes');
     await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
-
-    let data = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
-    expect(data.tasks[0]).toMatchObject({ categoryId: expect.any(String), color: '#21a179' });
-    const categoryRow = screen.getByRole('listitem');
-    await user.click(within(categoryRow).getByRole('button', { name: 'Delete' }));
-
-    data = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
-    expect(data.categories).toEqual([]);
-    expect(data.tasks[0].categoryId).toBeNull();
-    expect(screen.getByText('Water plants')).toBeVisible();
+    await waitFor(() => expect(serverBoard.tasks[0]?.title).toBe('Write release notes'));
+    const put = requests.find((request) => request.method === 'PUT')!;
+    expect(put.method).toBe('PUT');
+    expect(new Headers(put.headers).get('If-Match')).toBe('"v1"');
+    first.unmount();
+    render(<App />);
+    expect(await screen.findByText('Write release notes')).toBeVisible();
   });
 
-  it('combines category filtering with title search', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(screen.getByText('Manage categories'));
-    for (const name of ['Work', 'Home']) {
-      await user.type(screen.getByLabelText('New category name'), name);
-      await user.click(screen.getByRole('button', { name: 'Add category' }));
-    }
-
-    for (const [title, categoryName] of [['Prepare release', 'Work'], ['Plan dinner', 'Home']]) {
-      await user.click(screen.getByRole('button', { name: 'Add task' }));
-      const dialog = screen.getByRole('dialog', { name: 'Add a task' });
-      await user.type(within(dialog).getByLabelText('Title'), title);
-      const categoryId = within(dialog).getByRole('option', { name: categoryName }).getAttribute('value');
-      await user.selectOptions(within(dialog).getByLabelText('Category Optional'), categoryId!);
-      await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
-    }
-
-    const filter = screen.getByLabelText('Filter by category');
-    const workId = within(filter).getByRole('option', { name: 'Work' }).getAttribute('value');
-    await user.selectOptions(filter, workId!);
-    expect(screen.getByText('Prepare release')).toBeVisible();
-    expect(screen.queryByText('Plan dinner')).not.toBeInTheDocument();
-
-    await user.type(screen.getByRole('searchbox', { name: 'Search task titles' }), 'Plan');
-    expect(screen.queryByText('Prepare release')).not.toBeInTheDocument();
-    await user.selectOptions(filter, '');
-    expect(screen.getByText('Plan dinner')).toBeVisible();
-    expect(screen.queryByText('Prepare release')).not.toBeInTheDocument();
-  });
-
-  it('does not overwrite invalid stored data until the user explicitly replaces it', async () => {
-    const user = userEvent.setup();
-    localStorage.setItem(STORAGE_KEY, '{invalid');
-    render(<App />);
-
-    expect(screen.getByRole('alert')).toHaveTextContent('has been left untouched');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('{invalid');
-    await user.click(screen.getByRole('button', { name: 'Replace saved data with this board' }));
-
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(JSON.stringify(EMPTY_BOARD));
-    expect(screen.queryByText('Storage needs attention')).not.toBeInTheDocument();
-  });
-
-  it('reports failed storage writes instead of claiming the task was saved', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('quota exceeded');
+  it('keeps a failed draft and retries it using its original ETag', async () => {
+    const fetchImpl = vi.mocked(fetch);
+    fetchImpl.mockImplementationOnce(async () => response(serverBoard));
+    fetchImpl.mockImplementationOnce(async () => new Response('temporarily unavailable', { status: 503 }));
+    fetchImpl.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        requests.push(init);
+        serverBoard = JSON.parse(String(init.body)) as BoardData;
+        revision += 1;
+        return response(serverBoard, 200, revision);
+      }
+      return response(serverBoard);
     });
 
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Shared board ready.');
     await user.click(screen.getByRole('button', { name: 'Add task' }));
     const dialog = screen.getByRole('dialog', { name: 'Add a task' });
-    await user.type(within(dialog).getByLabelText('Title'), 'Keep working');
+    await user.type(within(dialog).getByLabelText('Title'), 'Keep this draft');
     await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
+    expect(screen.getByText('Keep this draft')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Retry save' }));
+    await waitFor(() => expect(serverBoard.tasks[0]?.title).toBe('Keep this draft'));
+    expect(new Headers(requests.at(-1)?.headers).get('If-Match')).toBe('"v1"');
+  });
 
-    expect(screen.getByRole('alert')).toHaveTextContent('could not be saved to browser storage');
-    expect(screen.getByRole('status')).toHaveTextContent('in this tab, but not saved');
+  it('does not rebase a stale draft and requires explicit discard before reload', async () => {
+    forceConflict = true;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Shared board ready.');
+    await user.click(screen.getByRole('button', { name: 'Add task' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a task' });
+    await user.type(within(dialog).getByLabelText('Title'), 'Unsaved stale draft');
+    await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
+    expect(await screen.findByText(/has not been rebased/)).toBeVisible();
+    expect(screen.getByText('Unsaved stale draft')).toBeVisible();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(screen.getByRole('button', { name: 'Discard draft and reload server' }));
+    await screen.findByText('Shared board ready.');
+    expect(screen.queryByText('Unsaved stale draft')).not.toBeInTheDocument();
+  });
+
+  it('does not access legacy browser data until the explicit backup action', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Shared board ready.');
+    expect(getItem).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Export legacy backup' }));
+    expect(getItem).toHaveBeenCalledWith('todo-board:v1');
+  });
+
+  it('does not refresh the concurrency token while a task editor has an unsaved draft', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Shared board ready.');
+    await user.click(screen.getByRole('button', { name: 'Add task' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a task' });
+    await user.type(within(dialog).getByLabelText('Title'), 'Keep editor draft');
+    const readsBeforeFocus = requests.length;
+    revision += 1;
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(requests).toHaveLength(readsBeforeFocus);
+    await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
+    expect(await screen.findByText(/has not been rebased/)).toBeVisible();
+    expect(serverBoard.tasks).toHaveLength(0);
+    expect(screen.getByText('Keep editor draft')).toBeVisible();
+  });
+
+  it('preserves the conflicted draft when an explicit reload fails', async () => {
+    forceConflict = true;
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Shared board ready.');
+    await user.click(screen.getByRole('button', { name: 'Add task' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a task' });
+    await user.type(within(dialog).getByLabelText('Title'), 'Unrecoverable without backup');
+    await user.click(within(dialog).getByRole('button', { name: 'Add task' }));
+    await screen.findByText(/has not been rebased/);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(fetch).mockRejectedValue(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Discard draft and reload server' }));
+    await screen.findByText('Board unavailable');
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(screen.getByText('Unrecoverable without backup')).toBeVisible();
+    expect(screen.getByText(/has not been rebased/)).toBeVisible();
+    vi.mocked(fetch).mockResolvedValue(response(serverBoard));
+    await user.click(screen.getByRole('button', { name: 'Retry loading' }));
+    await screen.findByText('Shared board ready.');
+    expect(screen.queryByText('Unrecoverable without backup')).not.toBeInTheDocument();
   });
 });

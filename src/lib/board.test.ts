@@ -9,7 +9,7 @@ import {
   setTaskStatus,
   updateTask,
 } from './board';
-import { loadBoard, parseBoardData, saveBoard, STORAGE_KEY } from './storage';
+import { parseBoardData, validateBoardData } from './storage';
 import type { BoardData, BoardTask } from '../types/board';
 
 const category = { id: 'work', name: 'Work' };
@@ -26,12 +26,6 @@ const populatedBoard: BoardData = {
   categories: [category],
   tasks: [task],
 };
-
-class MemoryStorage {
-  values = new Map<string, string>();
-  getItem(key: string) { return this.values.get(key) ?? null; }
-  setItem(key: string, value: string) { this.values.set(key, value); }
-}
 
 describe('board operations', () => {
   it('adds, edits, moves, and deletes tasks', () => {
@@ -59,30 +53,6 @@ describe('board operations', () => {
 });
 
 describe('board persistence and import validation', () => {
-  it('loads and saves board data through local storage', () => {
-    const storage = new MemoryStorage();
-    expect(loadBoard(storage).data).toEqual(EMPTY_BOARD);
-    saveBoard(populatedBoard, storage);
-    expect(loadBoard(storage)).toEqual({ data: populatedBoard, issue: null });
-  });
-
-  it('leaves invalid stored data untouched and requires explicit recovery', () => {
-    const storage = new MemoryStorage();
-    storage.setItem(STORAGE_KEY, '{broken');
-    const loaded = loadBoard(storage);
-    expect(loaded.issue?.kind).toBe('invalid');
-    expect(storage.getItem(STORAGE_KEY)).toBe('{broken');
-  });
-
-  it('reports read and write failures without a success-shaped fallback', () => {
-    const denied = {
-      getItem: () => { throw new Error('denied'); },
-      setItem: () => { throw new Error('denied'); },
-    };
-    expect(loadBoard(denied).issue?.kind).toBe('unavailable');
-    expect(() => saveBoard(populatedBoard, denied)).toThrow('denied');
-  });
-
   it('validates imported board structure, category links, and colors', () => {
     expect(parseBoardData(JSON.stringify(populatedBoard))).toEqual(populatedBoard);
     expect(() => parseBoardData('not-json')).toThrow('The file is not valid JSON.');
@@ -94,5 +64,25 @@ describe('board persistence and import validation', () => {
       ...populatedBoard,
       tasks: [{ ...task, color: 'blue' }],
     }))).toThrow('The board contains a category or task with invalid fields.');
+  });
+
+  it('validates unknown server payloads before treating them as board data', () => {
+    expect(validateBoardData(populatedBoard)).toEqual(populatedBoard);
+    expect(() => validateBoardData({ ...populatedBoard, version: 2 })).toThrow('supported ToDo board format');
+    expect(() => validateBoardData({ ...populatedBoard, tasks: [{ ...task, status: 'blocked' }] }))
+      .toThrow('invalid fields');
+  });
+
+  it('rejects imports outside the shared API limits', () => {
+    expect(() => validateBoardData({
+      ...populatedBoard, tasks: [{ ...task, title: 'x'.repeat(121) }],
+    })).toThrow('invalid fields');
+    expect(() => validateBoardData({
+      ...populatedBoard, categories: [{ ...category, name: 'x'.repeat(41) }],
+    })).toThrow('invalid fields');
+    expect(() => validateBoardData({
+      ...populatedBoard, tasks: Array.from({ length: 2001 }, (_, id) => ({ ...task, id: String(id) })),
+    })).toThrow('at most 200 categories');
+    expect(() => parseBoardData(' '.repeat(1_000_001))).toThrow('at most 1,000,000 bytes');
   });
 });

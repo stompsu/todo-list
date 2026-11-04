@@ -8,9 +8,10 @@ interface TaskEditorProps {
   categories: BoardCategory[];
   onCancel: () => void;
   onSave: (task: Omit<BoardTask, 'id'>) => void;
+  disabled?: boolean;
 }
 
-export default function TaskEditor({ task, categories, onCancel, onSave }: TaskEditorProps) {
+export default function TaskEditor({ task, categories, onCancel, onSave, disabled = false }: TaskEditorProps) {
   const [title, setTitle] = useState(task?.title ?? '');
   const [description, setDescription] = useState(task?.description ?? '');
   const [categoryId, setCategoryId] = useState(task?.categoryId ?? '');
@@ -67,10 +68,12 @@ export default function TaskEditor({ task, categories, onCancel, onSave }: TaskE
           </button>
         </div>
         <form className={styles.form} onSubmit={submit}>
+          {disabled && <p role="status">Editing is paused while the shared board refreshes or a conflict is resolved. Your form values are preserved.</p>}
           <label>
             Title
             <input
               autoFocus
+              disabled={disabled}
               required
               maxLength={120}
               value={title}
@@ -82,6 +85,7 @@ export default function TaskEditor({ task, categories, onCancel, onSave }: TaskE
             Description <span className={styles.optional}>Optional</span>
             <textarea
               rows={3}
+              disabled={disabled}
               maxLength={1000}
               value={description}
               onChange={(event) => setDescription(event.target.value)}
@@ -90,7 +94,7 @@ export default function TaskEditor({ task, categories, onCancel, onSave }: TaskE
           </label>
           <label>
             Category <span className={styles.optional}>Optional</span>
-            <select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
+            <select disabled={disabled} value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
               <option value="">Uncategorized</option>
               {categories.map((category) => (
                 <option key={category.id} value={category.id}>{category.name}</option>
@@ -100,14 +104,14 @@ export default function TaskEditor({ task, categories, onCancel, onSave }: TaskE
           <label className={styles.colorField}>
             Task color
             <span className={styles.colorControl}>
-              <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
+              <input type="color" disabled={disabled} value={color} onChange={(event) => setColor(event.target.value)} />
               <span>{color.toUpperCase()}</span>
             </span>
           </label>
           {error && <p className={styles.error} role="alert">{error}</p>}
           <div className={styles.actions}>
             <button type="button" className={styles.secondaryButton} onClick={onCancel}>Cancel</button>
-            <button type="submit" className={styles.primaryButton}>{task ? 'Save changes' : 'Add task'}</button>
+            <button type="submit" className={styles.primaryButton} disabled={disabled}>{task ? 'Save changes' : 'Add task'}</button>
           </div>
         </form>
       </section>
