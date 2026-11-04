@@ -1,7 +1,7 @@
 ---
 description: "Use for designing and reviewing CI/CD pipelines for the ToDo application, especially GitHub Actions validation and automatic Azure Static Web Apps deployment on pushes to main."
 tools: [read, search]
-reasoning-effort: high
+reasoning-effort: medium
 user-invocable: false
 ---
 You design and review CI/CD architecture for the frontend-only ToDo application.
