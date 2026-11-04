@@ -73,12 +73,12 @@ jobs:
         run: docker build --file Dockerfile --tag todo-board-api:${GITHUB_SHA} .
 
       - name: Set up Bicep
-        uses: Azure/setup-bicep@v1
+        run: az bicep install
 
       - name: Compile infrastructure template and parameters
         run: |
-          bicep build infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
-          bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
+          az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+          az bicep build-params --file infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
 
   deploy-frontend:
     name: Deploy production frontend
