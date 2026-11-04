@@ -1,0 +1,150 @@
+.backdrop {
+  position: fixed;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(25 34 47 / 42%);
+}
+
+.dialog {
+  width: min(100%, 30rem);
+  max-height: min(90vh, 48rem);
+  overflow: auto;
+  padding: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 1.5rem 4rem rgb(20 30 45 / 22%);
+}
+
+.heading,
+.actions,
+.colorControl {
+  display: flex;
+  align-items: center;
+}
+
+.heading,
+.actions {
+  justify-content: space-between;
+}
+
+.heading {
+  margin-bottom: 1.2rem;
+}
+
+.heading h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.iconButton,
+.secondaryButton,
+.primaryButton {
+  min-height: 2.5rem;
+  border-radius: 0.6rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.iconButton {
+  display: grid;
+  width: 2.5rem;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.iconButton:hover {
+  background: var(--soft);
+}
+
+.form,
+.form label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.form {
+  gap: 1rem;
+}
+
+.form label {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.form input:not([type='color']),
+.form textarea,
+.form select {
+  width: 100%;
+  min-height: 2.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.form textarea {
+  resize: vertical;
+}
+
+.optional {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.colorControl {
+  gap: 0.65rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.colorControl input {
+  width: 2.75rem;
+  height: 2.2rem;
+  padding: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.actions {
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+
+.secondaryButton,
+.primaryButton {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.secondaryButton {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.primaryButton {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
