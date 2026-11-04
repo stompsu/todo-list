@@ -1,5 +1,5 @@
 ---
-description: "Use for adding or running Vitest, React Testing Library, and Playwright coverage for ToDo operations, persistence, accessibility, and responsive layouts."
+description: "Use for adding or running Vitest, React Testing Library, Playwright, and .NET API coverage for shared ToDo operations, concurrency, persistence failures, accessible drag-and-drop, and responsive layouts."
 tools: [read, edit, search, execute]
 reasoning-effort: medium
 user-invocable: false
@@ -14,7 +14,7 @@ You verify the ToDo application against its approved acceptance criteria.
 
 ## Approach
 1. Inspect existing test configuration and application behavior.
-2. Add or run focused tests for task operations, persistence and failure handling, JSON transfer, accessibility, and desktop/mobile flows as assigned.
+2. Add or run focused tests for shared task operations, ETag conflicts and failure handling, JSON transfer, legacy data preservation, pointer/touch and keyboard drag-and-drop, accessibility, and desktop/mobile flows as assigned.
 3. Report exact commands, outcomes, and uncovered acceptance criteria.
 
 ## Output Format

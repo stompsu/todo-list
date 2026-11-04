@@ -1,12 +1,10 @@
-name: CI and Azure Static Web Apps deployment
+name: CI and production deployment
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,19 +15,21 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate application
+    name: Validate frontend, API, container, and Bicep
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
 
       - name: Lint
@@ -41,42 +41,252 @@ jobs:
       - name: Run unit and component tests
         run: npm test
 
-      - name: Install Playwright browser
+      - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Run browser tests
-        run: npm run test:e2e
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
 
-      - name: Build production app
+      - name: Run Playwright tests
+        run: npm run test:e2e -- --global-timeout=300000
+        env:
+          CI: true
+
+      - name: Build frontend
         run: npm run build
 
-  deploy:
-    name: Deploy production site
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Upload prebuilt frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Test API
+        run: dotnet test api/TodoBoard.Api.Tests --configuration Release --verbosity minimal --blame-hang-timeout 60s --disable-build-servers
+
+      - name: Build API Docker image (api build context)
+        working-directory: api
+        run: docker build --file Dockerfile --tag todo-board-api:${GITHUB_SHA} .
+
+      - name: Set up Bicep
+        uses: Azure/setup-bicep@v1
+
+      - name: Compile infrastructure template and parameters
+        run: |
+          bicep build infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+          bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
+
+  deploy-frontend:
+    name: Deploy production frontend
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BACKEND_DEPLOYMENT_ENABLED == 'true'
     needs:
       - validate
+      - smoke-api
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Validate production frontend configuration
+        env:
+          BACKEND_DEPLOYMENT_ENABLED: ${{ vars.BACKEND_DEPLOYMENT_ENABLED }}
+          SWA_NAME: ${{ vars.SWA_NAME }}
+          SWA_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$BACKEND_DEPLOYMENT_ENABLED" == "true" ]] || {
+            echo "::error::Enable deployment only after provisioning and linking the shared API."
+            exit 1
+          }
+          [[ -n "$SWA_NAME" ]] || {
+            echo "::error::Set repository variable SWA_NAME."
+            exit 1
+          }
+          [[ -n "$SWA_TOKEN" ]] || {
+            echo "::error::Set repository secret AZURE_STATIC_WEB_APPS_API_TOKEN."
+            exit 1
+          }
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Download validated frontend
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
+          name: frontend-dist
+          path: dist
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build production app
-        run: npm run build
-
-      - name: Deploy to Azure Static Web Apps
+      - name: Deploy prebuilt site to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: upload
-          app_location: /
+          app_location: dist
           api_location: ""
-          output_location: dist
+          output_location: ""
+          skip_app_build: true
+
+  deploy-api:
+    name: Build and deploy API image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BACKEND_DEPLOYMENT_ENABLED == 'true'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      api_fqdn: ${{ steps.resources.outputs.api_fqdn }}
+      swa_host: ${{ steps.resources.outputs.swa_host }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate API deployment configuration
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          CONTAINER_APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+          SWA_NAME: ${{ vars.SWA_NAME }}
+        run: |
+          set -euo pipefail
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+                      AZURE_RESOURCE_GROUP ACR_NAME CONTAINER_APP_NAME SWA_NAME; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Set repository variable $name before enabling backend deployment."
+              exit 1
+            fi
+          done
+
+      - name: Sign in to Azure using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify existing targets and collect smoke-test hostnames
+        id: resources
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          CONTAINER_APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+          SWA_NAME: ${{ vars.SWA_NAME }}
+        run: |
+          set -euo pipefail
+          timeout 60s az acr show --name "$ACR_NAME" --query name --output tsv >/dev/null
+          app="$(timeout 60s az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query name --output tsv)"
+          [[ "$app" == "$CONTAINER_APP_NAME" ]] || {
+            echo "::error::The configured Container App does not exist in the configured resource group."
+            exit 1
+          }
+          swa_host="$(timeout 60s az staticwebapp show \
+            --name "$SWA_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query defaultHostname --output tsv)"
+          [[ -n "$swa_host" && "$swa_host" != "None" ]] || {
+            echo "::error::Could not find the configured existing Static Web App or its hostname."
+            exit 1
+          }
+          api_fqdn="$(timeout 60s az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn --output tsv)"
+          [[ -n "$api_fqdn" && "$api_fqdn" != "None" ]] || {
+            echo "::error::The existing Container App has no ingress hostname to verify; no ingress will be provisioned by this workflow."
+            exit 1
+          }
+          echo "swa_host=$swa_host" >> "$GITHUB_OUTPUT"
+          echo "api_fqdn=$api_fqdn" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push API image tagged with commit SHA
+        working-directory: api
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          timeout 1200s az acr build \
+            --registry "$ACR_NAME" \
+            --image "todo-board-api:${GITHUB_SHA}" \
+            --file Dockerfile \
+            .
+
+      - name: Update existing Container App image
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          CONTAINER_APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          timeout 1200s az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "${ACR_NAME}.azurecr.io/todo-board-api:${GITHUB_SHA}" \
+            --only-show-errors
+
+  smoke-api:
+    name: Verify SWA proxy and reject direct API access
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BACKEND_DEPLOYMENT_ENABLED == 'true'
+    needs:
+      - deploy-api
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Verify health through Static Web Apps and deny direct API access
+        env:
+          SWA_HOST: ${{ needs.deploy-api.outputs.swa_host }}
+          API_FQDN: ${{ needs.deploy-api.outputs.api_fqdn }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SWA_HOST" && -n "$API_FQDN" ]] || {
+            echo "::error::Missing SWA or API hostname from the deployment job."
+            exit 1
+          }
+
+          health_url="https://${SWA_HOST}/api/health"
+          health_body="$RUNNER_TEMP/api-health.json"
+          healthy=false
+          for attempt in {1..30}; do
+            status="$(curl --silent --show-error --max-time 10 \
+              --output "$health_body" --write-out '%{http_code}' "$health_url" || true)"
+            if [[ "$status" == "200" ]] && grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"' "$health_body"; then
+              healthy=true
+              break
+            fi
+            echo "SWA-proxied health check attempt $attempt/30 returned HTTP ${status:-000}."
+            sleep 10
+          done
+          [[ "$healthy" == "true" ]] || {
+            echo "::error::The API did not return healthy through the SWA /api proxy within five minutes."
+            exit 1
+          }
+
+          timeout 60s curl --fail --silent --show-error --max-time 45 \
+            --dump-header "$RUNNER_TEMP/board-headers.txt" \
+            --output "$RUNNER_TEMP/board.json" "https://${SWA_HOST}/api/board"
+          grep -iq '^etag:' "$RUNNER_TEMP/board-headers.txt" || {
+            echo "::error::The shared board response is missing its ETag."
+            exit 1
+          }
+          python -c 'import json,sys; b=json.load(open(sys.argv[1])); assert b["version"] == 1 and isinstance(b["tasks"],list) and isinstance(b["categories"],list)' "$RUNNER_TEMP/board.json"
+
+          direct_status="$(curl --silent --show-error --max-time 10 \
+            --output /dev/null --write-out '%{http_code}' \
+            "https://${API_FQDN}/api/board" || true)"
+          case "$direct_status" in
+            401|403)
+              echo "Direct API access is rejected (HTTP ${direct_status})."
+              ;;
+            *)
+              echo "::error::Direct API authorization was not verified (HTTP ${direct_status})."
+              exit 1
+              ;;
+          esac

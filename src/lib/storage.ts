@@ -1,18 +1,6 @@
-import { EMPTY_BOARD } from './board';
 import type { BoardData, BoardTask, BoardCategory } from '../types/board';
 
 export const STORAGE_KEY = 'todo-board:v1';
-
-export type StorageIssue =
-  | { kind: 'invalid'; message: string }
-  | { kind: 'unavailable'; message: string };
-
-export interface BoardLoadResult {
-  data: BoardData;
-  issue: StorageIssue | null;
-}
-
-type StorageAdapter = Pick<Storage, 'getItem' | 'setItem'>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -22,17 +10,22 @@ function isValidCategory(value: unknown): value is BoardCategory {
   return isRecord(value)
     && typeof value.id === 'string'
     && value.id.length > 0
+    && value.id.length <= 100
     && typeof value.name === 'string'
-    && value.name.trim().length > 0;
+    && value.name.trim().length > 0
+    && value.name.length <= 40;
 }
 
 function isValidTask(value: unknown): value is BoardTask {
   return isRecord(value)
     && typeof value.id === 'string'
     && value.id.length > 0
+    && value.id.length <= 100
     && typeof value.title === 'string'
     && value.title.trim().length > 0
+    && value.title.length <= 120
     && typeof value.description === 'string'
+    && value.description.length <= 1000
     && (value.categoryId === null || typeof value.categoryId === 'string')
     && typeof value.color === 'string'
     && /^#[\da-f]{6}$/i.test(value.color)
@@ -40,23 +33,26 @@ function isValidTask(value: unknown): value is BoardTask {
     && ['todo', 'in-progress', 'completed'].includes(value.status);
 }
 
-export function parseBoardData(json: string): BoardData {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    throw new Error('The file is not valid JSON.');
-  }
-
+export function validateBoardData(value: unknown): BoardData {
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.categories) || !Array.isArray(value.tasks)) {
     throw new Error('The data does not match a supported ToDo board format.');
+  }
+  if (value.categories.length > 200 || value.tasks.length > 2000) {
+    throw new Error('A board supports at most 200 categories and 2,000 tasks.');
   }
   if (!value.categories.every(isValidCategory) || !value.tasks.every(isValidTask)) {
     throw new Error('The board contains a category or task with invalid fields.');
   }
 
-  const categories = value.categories;
-  const tasks = value.tasks;
+  const categories = value.categories.map((category) => ({ id: category.id, name: category.name }));
+  const tasks = value.tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    categoryId: task.categoryId,
+    color: task.color,
+    status: task.status,
+  }));
   const categoryIds = new Set(categories.map((category) => category.id));
   const taskIds = new Set(tasks.map((task) => task.id));
 
@@ -70,48 +66,16 @@ export function parseBoardData(json: string): BoardData {
   return { version: 1, categories, tasks };
 }
 
-export function loadBoard(storage?: StorageAdapter): BoardLoadResult {
-  let store: StorageAdapter;
+export function parseBoardData(json: string): BoardData {
+  if (new TextEncoder().encode(json).length > 1_000_000) {
+    throw new Error('The board file must be at most 1,000,000 bytes.');
+  }
+  let value: unknown;
   try {
-    store = storage ?? window.localStorage;
+    value = JSON.parse(json);
   } catch {
-    return {
-      data: EMPTY_BOARD,
-      issue: {
-        kind: 'unavailable',
-        message: 'Browser storage is unavailable. Changes will stay in this tab until storage is accessible.',
-      },
-    };
+    throw new Error('The file is not valid JSON.');
   }
 
-  let raw: string | null;
-  try {
-    raw = store.getItem(STORAGE_KEY);
-  } catch {
-    return {
-      data: EMPTY_BOARD,
-      issue: {
-        kind: 'unavailable',
-        message: 'Saved data could not be read. It has not been changed; changes will stay in this tab.',
-      },
-    };
-  }
-  if (raw === null) return { data: EMPTY_BOARD, issue: null };
-
-  try {
-    return { data: parseBoardData(raw), issue: null };
-  } catch {
-    return {
-      data: EMPTY_BOARD,
-      issue: {
-        kind: 'invalid',
-        message: 'Saved board data is invalid and has been left untouched. Review or replace it explicitly before saving.',
-      },
-    };
-  }
-}
-
-export function saveBoard(board: BoardData, storage?: StorageAdapter): void {
-  const store = storage ?? window.localStorage;
-  store.setItem(STORAGE_KEY, JSON.stringify(board));
+  return validateBoardData(value);
 }
